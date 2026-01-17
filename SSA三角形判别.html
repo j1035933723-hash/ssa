@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>SSA 演示（标注角A、b、c、h）</title>
+<style>
+:root{--bg:#0b1020;--panel:#111a33;--text:#e8eeff;--line:#2a3a74}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC",sans-serif}
+.wrap{display:grid;grid-template-rows:auto 1fr;height:100%}
+header{padding:12px}
+h1{margin:0;font-size:16px}
+.content{display:grid;grid-template-columns:360px 1fr;gap:12px;padding:0 12px 12px;height:100%}
+@media(max-width:900px){.content{grid-template-columns:1fr;grid-template-rows:auto 1fr}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px}
+.row{display:grid;grid-template-columns:1fr 120px;gap:10px;margin:8px 0}
+label{font-size:13px}
+input{width:100%}
+.canvasWrap{border:1px solid var(--line);border-radius:14px;overflow:hidden}
+canvas{width:100%;height:100%}
+.status{margin-top:10px;font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header><h1>SSA 演示（标注角A、b、c、高h）</h1></header>
+
+<div class="content">
+<div class="panel">
+  <div class="row"><label>角 A (°)</label><input id="inA" type="number" value="57"></div>
+  <div class="row"><label>b = AC</label><input id="inB" type="number" value="27"></div>
+  <div class="row"><label>c（旋转边）</label><input id="inC" type="number" value="25"></div>
+  <div class="row"><label>旋转角</label><input id="rot" type="range" min="0" max="360" step="0.1" value="293.7"></div>
+  <div class="row"><label>缩放</label><input id="zoom" type="range" min="0.5" max="2.5" step="0.01" value="1"></div>
+  <div class="status" id="status"></div>
+</div>
+
+<div class="canvasWrap"><canvas id="cv"></canvas></div>
+</div>
+</div>
+
+<script>
+const cv=document.getElementById("cv"),ctx=cv.getContext("2d");
+const inA=document.getElementById("inA"),inB=document.getElementById("inB"),
+      inC=document.getElementById("inC"),rot=document.getElementById("rot"),
+      zoom=document.getElementById("zoom"),status=document.getElementById("status");
+
+function resize(){
+ const dpr=window.devicePixelRatio||1,r=cv.getBoundingClientRect();
+ cv.width=r.width*dpr;cv.height=r.height*dpr;
+ ctx.setTransform(dpr,0,0,dpr,0,0);draw();
+}
+function draw(){
+ const w=cv.width/(window.devicePixelRatio||1),
+       h=cv.height/(window.devicePixelRatio||1);
+ ctx.clearRect(0,0,w,h);
+
+ const Adeg=+inA.value,b=+inB.value,c=+inC.value;
+ const z=+zoom.value,theta=Adeg*Math.PI/180;
+ const pad=80,yBase=h-pad,A={x:pad,y:yBase};
+ const scale=8*z;
+ const C={x:A.x+b*Math.cos(theta)*scale,
+          y:A.y-b*Math.sin(theta)*scale};
+ const r=c*scale,phi=+rot.value*Math.PI/180;
+ const P={x:C.x+r*Math.cos(phi),y:C.y-r*Math.sin(phi)};
+ const hVal=b*Math.sin(theta);
+
+ // base
+ ctx.strokeStyle="#aaa";ctx.lineWidth=2;
+ ctx.beginPath();ctx.moveTo(0,yBase);ctx.lineTo(w,yBase);ctx.stroke();
+
+ // b
+ ctx.strokeStyle="#fff";ctx.lineWidth=3;
+ ctx.beginPath();ctx.moveTo(A.x,A.y);ctx.lineTo(C.x,C.y);ctx.stroke();
+
+ // c circle
+ ctx.strokeStyle="rgba(0,200,255,.6)";
+ ctx.beginPath();ctx.arc(C.x,C.y,r,0,Math.PI*2);ctx.stroke();
+
+ // rotating c
+ ctx.strokeStyle="#ff0";
+ ctx.beginPath();ctx.moveTo(C.x,C.y);ctx.lineTo(P.x,P.y);ctx.stroke();
+
+ // h
+ ctx.setLineDash([6,6]);ctx.strokeStyle="#ccc";
+ ctx.beginPath();ctx.moveTo(C.x,C.y);ctx.lineTo(C.x,yBase);ctx.stroke();
+ ctx.setLineDash([]);
+
+ // labels
+ ctx.fillStyle="#fff";ctx.font="13px sans-serif";
+ ctx.fillText("A",A.x-14,A.y+4);
+ ctx.fillText("C",C.x+6,C.y-6);
+ ctx.fillText(`b = ${b}`, (A.x+C.x)/2,(A.y+C.y)/2);
+ ctx.fillText(`c = ${c}`, (C.x+P.x)/2,(C.y+P.y)/2);
+ ctx.fillText(`h = ${hVal.toFixed(3)}`,C.x+8,(C.y+yBase)/2);
+
+ // angle A arc
+ ctx.strokeStyle="#8ab4ff";
+ ctx.beginPath();ctx.arc(A.x,A.y,28,0,-theta,true);ctx.stroke();
+ ctx.fillText(`A=${Adeg}°`,A.x+10,A.y-35);
+
+ status.textContent=`h = b·sin(A) = ${hVal.toFixed(3)}`;
+}
+
+[inA,inB,inC,rot,zoom].forEach(e=>e.oninput=draw);
+window.onresize=resize;resize();
+</script>
+</body>
+</html>
