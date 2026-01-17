@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>三维示例图（清晰版）：两船观测同一飞机</title>
+<style>
+  :root{--bg:#0b1020;--panel:#111a33;--text:#e8eeff;--muted:#a9b4d6;--line:#2a3a74}
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC",sans-serif;}
+  .wrap{display:grid;grid-template-rows:auto 1fr;height:100%}
+  header{padding:12px 14px}
+  h1{margin:0;font-size:16px;font-weight:650}
+  .content{display:grid;grid-template-columns:340px 1fr;gap:12px;padding:0 12px 12px;box-sizing:border-box;height:100%}
+  @media(max-width:900px){.content{grid-template-columns:1fr;grid-template-rows:auto 1fr}}
+  .panel{background:color-mix(in srgb,var(--panel) 92%, black);
+    border:1px solid color-mix(in srgb,var(--line) 55%, black);
+    border-radius:14px;padding:12px;box-shadow:0 10px 24px rgba(0,0,0,.25)}
+  .row{display:grid;grid-template-columns:1fr 120px;gap:10px;align-items:center;margin:10px 0}
+  label{font-size:13px}
+  input[type="range"],input[type="number"]{width:100%}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
+  .hint{font-size:12px;color:var(--muted);line-height:1.35;margin-top:6px}
+  .status{margin-top:10px;padding:10px;border-radius:12px;background:rgba(255,255,255,.05);
+    border:1px solid color-mix(in srgb,var(--line) 45%, black);font-size:13px;line-height:1.45}
+  .canvasWrap{border:1px solid color-mix(in srgb,var(--line) 55%, black);border-radius:14px;overflow:hidden;
+    background:radial-gradient(1200px 600px at 30% 30%, rgba(120,140,255,.18), transparent 55%),
+               radial-gradient(900px 500px at 70% 65%, rgba(70,220,255,.10), transparent 60%),
+               rgba(255,255,255,.03);}
+  canvas{width:100%;height:100%;display:block;touch-action:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header><h1>三维示例图（清晰版）：两艘船观测同一飞机（高度向上显示，仅绕竖直轴旋转）</h1></header>
+
+  <div class="content">
+    <div class="panel">
+      <div class="row">
+        <label>飞机高度（km）</label>
+        <input id="alt" type="number" min="0.1" step="0.1" value="10" />
+      </div>
+      <div class="row"><label>A→飞机 方位/仰角</label><div class="mono">048° / 70°</div></div>
+      <div class="row"><label>B→飞机 方位/仰角</label><div class="mono">285° / 15°</div></div>
+      <div class="row"><label>A→B 方位角</label><div class="mono">096°</div></div>
+
+      <div class="row">
+        <label>视角绕高度轴旋转</label>
+        <input id="yaw" type="range" min="0" max="360" step="0.1" value="320" />
+      </div>
+      <div class="row" style="margin-top:-4px">
+        <label class="mono">yaw</label>
+        <div class="mono" id="yawVal">320.0°</div>
+      </div>
+
+      <div class="row">
+        <label>缩放</label>
+        <input id="zoom" type="range" min="0.25" max="3.5" step="0.01" value="1.00" />
+      </div>
+
+      <div class="hint">
+        逻辑：先用 A 的 (048°,70°) + 高度确定飞机点 P；再用 B 的 (285°,15°) 反推 B 的位置，使 B→P 指向同一飞机点。<br/>
+        如题目给定 A→B=096° 与计算不一致，会显示偏离误差（横向误差越小越一致）。
+      </div>
+
+      <div class="status" id="status"></div>
+    </div>
+
+    <div class="canvasWrap"><canvas id="cv"></canvas></div>
+  </div>
+</div>
+
+<script>
+(() => {
+  // fixed angles
+  const bearingA = 48, elevA = 70;
+  const bearingB = 285, elevB = 15;
+  const bearingAB = 96;
+
+  const altEl = document.getElementById('alt');
+  const yawEl = document.getElementById('yaw');
+  const yawValEl = document.getElementById('yawVal');
+  const zoomEl = document.getElementById('zoom');
+  const statusEl = document.getElementById('status');
+
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+
+  // --- math helpers ---
+  const deg2rad = d => d*Math.PI/180;
+  function add(a,b){ return {x:a.x+b.x,y:a.y+b.y,z:a.z+b.z}; }
+  function sub(a,b){ return {x:a.x-b.x,y:a.y-b.y,z:a.z-b.z}; }
+  function mul(a,s){ return {x:a.x*s,y:a.y*s,z:a.z*s}; }
+  function dot(a,b){ return a.x*b.x+a.y*b.y+a.z*b.z; }
+  function len(a){ return Math.hypot(a.x,a.y,a.z); }
+  function norm2(a){ return Math.hypot(a.x,a.y); }
+
+  // bearing: clockwise from north. x=east, y=north
+  function bearingUnit2D(b){
+    const r = deg2rad(b);
+    return {x: Math.sin(r), y: Math.cos(r), z: 0};
+  }
+  function dirFromBearingElev(b,e){
+    const br = deg2rad(b), er = deg2rad(e);
+    return {
+      x: Math.cos(er)*Math.sin(br),
+      y: Math.cos(er)*Math.cos(br),
+      z: Math.sin(er)
+    };
+  }
+
+  // --- camera: only yaw about z, fixed pitch ---
+  let yaw = deg2rad(parseFloat(yawEl.value)||320);
+  let pitch = deg2rad(-24); // IMPORTANT: negative so "up" (z+) appears upward on screen
+  let userZoom = parseFloat(zoomEl.value)||1.00;
+
+  function rotateZ(p, ang){
+    const c=Math.cos(ang), s=Math.sin(ang);
+    return {x: p.x*c - p.y*s, y: p.x*s + p.y*c, z:p.z};
+  }
+  function rotateX(p, ang){
+    const c=Math.cos(ang), s=Math.sin(ang);
+    return {x: p.x, y: p.y*c - p.z*s, z: p.y*s + p.z*c};
+  }
+
+  function project(p, center, scale){
+    let q = sub(p, center);
+    q = rotateZ(q, yaw);
+    q = rotateX(q, pitch);
+
+    const W = cv.getBoundingClientRect().width;
+    const H = cv.getBoundingClientRect().height;
+
+    // stronger perspective + bigger focal improves readability
+    const f = 900 * userZoom;
+    const z = q.z + 190; // push away from camera
+    const px = (q.x * f) / z;
+    const py = (q.y * f) / z;
+    return {x: W/2 + px*scale, y: H/2 - py*scale, zc:z};
+  }
+
+  function line3(a,b,center,scale,stroke,width=2,dash=null){
+    const A = project(a,center,scale);
+    const B = project(b,center,scale);
+    ctx.save();
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = width;
+    ctx.setLineDash(dash || []);
+    ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(A.x,A.y); ctx.lineTo(B.x,B.y); ctx.stroke();
+    ctx.restore();
+  }
+
+  function arrow3(a,b,center,scale,stroke,width=3){
+    // draw line + 2D arrowhead on screen
+    const A = project(a,center,scale);
+    const B = project(b,center,scale);
+    const dx = B.x - A.x, dy = B.y - A.y;
+    const L = Math.hypot(dx,dy) || 1;
+    const ux = dx/L, uy = dy/L;
+
+    ctx.save();
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = width;
+    ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(A.x,A.y); ctx.lineTo(B.x,B.y); ctx.stroke();
+
+    const ah = 12; // arrowhead length
+    const aw = 7;  // half width
+    const px = -uy, py = ux;
+    ctx.fillStyle = stroke;
+    ctx.beginPath();
+    ctx.moveTo(B.x, B.y);
+    ctx.lineTo(B.x - ux*ah + px*aw, B.y - uy*ah + py*aw);
+    ctx.lineTo(B.x - ux*ah - px*aw, B.y - uy*ah - py*aw);
+    ctx.closePath();
+    ctx.globalAlpha = 0.9;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function point3(p,center,scale,fill,label){
+    const P = project(p,center,scale);
+    ctx.save();
+    ctx.fillStyle = fill;
+    ctx.beginPath(); ctx.arc(P.x,P.y,7,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+    ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = 'rgba(232,238,255,0.98)';
+    ctx.font = '14px -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Arial';
+    ctx.shadowColor = 'rgba(0,0,0,0.55)';
+    ctx.shadowBlur = 6;
+    ctx.fillText(label, P.x+12, P.y-10);
+    ctx.restore();
+  }
+
+  function hudBox(lines){
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.28)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 1;
+    const x=12,y=12,w=520,h=18+20*lines.length;
+    roundRect(ctx, x,y,w,h,12);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = 'rgba(232,238,255,0.96)';
+    ctx.font = '12.5px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace';
+    lines.forEach((t,i)=>ctx.fillText(t, x+14, y+24+20*i));
+    ctx.restore();
+  }
+  function roundRect(ctx,x,y,w,h,r){
+    r = Math.min(r, w/2, h/2);
+    ctx.beginPath();
+    ctx.moveTo(x+r,y);
+    ctx.arcTo(x+w,y,x+w,y+h,r);
+    ctx.arcTo(x+w,y+h,x,y+h,r);
+    ctx.arcTo(x,y+h,x,y,r);
+    ctx.arcTo(x,y,x+w,y,r);
+    ctx.closePath();
+  }
+
+  // --- interaction: drag horizontally to adjust yaw only ---
+  let dragging=false, lastX=0;
+  cv.addEventListener('pointerdown', (e)=>{
+    dragging=true; lastX=e.clientX; cv.setPointerCapture(e.pointerId);
+  });
+  cv.addEventListener('pointermove', (e)=>{
+    if(!dragging) return;
+    const dx = e.clientX-lastX; lastX=e.clientX;
+    yaw += dx * 0.008;
+    let yawDeg = (yaw*180/Math.PI)%360; if(yawDeg<0) yawDeg+=360;
+    yawEl.value = yawDeg.toFixed(1);
+    yawValEl.textContent = yawDeg.toFixed(1) + "°";
+    draw();
+  });
+  cv.addEventListener('pointerup', ()=>dragging=false);
+  cv.addEventListener('pointercancel', ()=>dragging=false);
+
+  cv.addEventListener('wheel', (e)=>{
+    e.preventDefault();
+    userZoom *= (e.deltaY>0 ? 0.92 : 1.08);
+    userZoom = Math.max(0.20, Math.min(3.5, userZoom));
+    zoomEl.value = userZoom.toFixed(2);
+    draw();
+  }, {passive:false});
+
+  yawEl.addEventListener('input', ()=>{
+    const v = parseFloat(yawEl.value)||0;
+    yaw = deg2rad(v);
+    yawValEl.textContent = v.toFixed(1) + "°";
+    draw();
+  });
+  zoomEl.addEventListener('input', ()=>{
+    userZoom = parseFloat(zoomEl.value)||1;
+    draw();
+  });
+  altEl.addEventListener('input', ()=>draw());
+
+  function resize(){
+    const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+    const r = cv.getBoundingClientRect();
+    cv.width = Math.floor(r.width*dpr);
+    cv.height = Math.floor(r.height*dpr);
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    draw();
+  }
+  window.addEventListener('resize', resize, {passive:true});
+
+  function computeScene(alt){
+    const A = {x:0,y:0,z:0};
+
+    // Aircraft point P fixed by A's bearing/elev + altitude
+    const uA = dirFromBearingElev(bearingA, elevA);
+    const tA = alt / Math.max(1e-9, uA.z);
+    const P = mul(uA, tA);
+
+    // Infer B so that its ray reaches the SAME P at altitude alt
+    const uB = dirFromBearingElev(bearingB, elevB);
+    const sB = alt / Math.max(1e-9, uB.z);
+    const B = sub(P, mul(uB, sB));
+    const B2 = {x:B.x, y:B.y, z:0};
+
+    // Compare computed A->B bearing to 96°
+    const bearingComputed = (() => {
+      const br = Math.atan2(B2.x, B2.y) * 180/Math.PI;
+      let bd = br; if (bd < 0) bd += 360;
+      return bd;
+    })();
+
+    const uAB = bearingUnit2D(bearingAB);
+    const dAlong = dot(B2, uAB);
+    const proj = mul(uAB, dAlong);
+    const perp = sub(B2, proj);
+    const perpErr = Math.hypot(perp.x, perp.y);
+
+    const AB = Math.hypot(B2.x, B2.y);
+
+    return {A,B:B2,P,uA,uB,AB,perpErr,dAlong,bearingComputed, tA, sB};
+  }
+
+  function draw(){
+    const W = cv.getBoundingClientRect().width;
+    const H = cv.getBoundingClientRect().height;
+    ctx.clearRect(0,0,W,H);
+
+    const alt = Math.max(0.1, parseFloat(altEl.value)||10);
+    const scene = computeScene(alt);
+    const A = scene.A, B = scene.B, P = scene.P;
+
+    const center = mul(add(add(A,B), P), 1/3);
+
+    const radius = Math.max(scene.AB, len(P), len(sub(P,B)), len(sub(P,A)));
+    const scale = (Math.min(W,H) / (radius + 38)) * 0.98;
+
+    // grid (lighter, fewer lines for clarity)
+    const gridStep = 12;
+    const gridHalf = Math.max(84, Math.ceil((radius+18)/gridStep)*gridStep);
+    for(let x=-gridHalf; x<=gridHalf; x+=gridStep){
+      line3({x:x,y:-gridHalf,z:0},{x:x,y:gridHalf,z:0},center,scale,'rgba(255,255,255,0.065)',1);
+    }
+    for(let y=-gridHalf; y<=gridHalf; y+=gridStep){
+      line3({x:-gridHalf,y:y,z:0},{x:gridHalf,y:y,z:0},center,scale,'rgba(255,255,255,0.065)',1);
+    }
+
+    // axes at A (arrows)
+    arrow3(A,{x:0,y:32,z:0},center,scale,'rgba(70,220,255,0.65)',2.5);   // N
+    arrow3(A,{x:32,y:0,z:0},center,scale,'rgba(120,140,255,0.65)',2.5);  // E
+    arrow3(A,{x:0,y:0,z:32},center,scale,'rgba(255,255,255,0.60)',2.5);  // Up
+
+    // AB line
+    line3(A,B,center,scale,'rgba(255,255,255,0.70)',2.5);
+
+    // observation rays (thicker)
+    arrow3(A,P,center,scale,'rgba(120,140,255,0.98)',3.6);
+    arrow3(B,P,center,scale,'rgba(70,220,255,0.98)',3.6);
+
+    // altitude: vertical dashed (make it clearly upwards)
+    const G = {x:P.x,y:P.y,z:0};
+    line3(G,P,center,scale,'rgba(255,255,255,0.78)',2.8,[6,6]);
+
+    // ground projections dashed
+    line3(A,G,center,scale,'rgba(120,140,255,0.55)',2.2,[8,6]);
+    line3(B,G,center,scale,'rgba(70,220,255,0.55)',2.2,[8,6]);
+
+    // points
+    point3(A,center,scale,'rgba(255,255,255,0.98)','A（船）');
+    point3(B,center,scale,'rgba(255,255,255,0.94)','B（船）');
+    point3(P,center,scale,'rgba(255,235,120,0.98)','飞机 P');
+
+    // label altitude near vertical line
+    const midAlt = {x:P.x, y:P.y, z:alt*0.55};
+    const mid2 = project(midAlt, center, scale);
+    ctx.save();
+    ctx.fillStyle = 'rgba(255,255,255,0.95)';
+    ctx.font = '13px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace';
+    ctx.shadowColor = 'rgba(0,0,0,0.55)';
+    ctx.shadowBlur = 6;
+    ctx.fillText(`高度 h = ${alt.toFixed(2)} km`, mid2.x + 10, mid2.y - 8);
+    ctx.restore();
+
+    const dA = alt / Math.tan(deg2rad(elevA));
+    const dB = alt / Math.tan(deg2rad(elevB));
+
+    hudBox([
+      `高度 h = ${alt.toFixed(2)} km`,
+      `A→P: bearing ${bearingA}°, elev ${elevA}°  (水平距 dA=${dA.toFixed(2)} km)`,
+      `B→P: bearing ${bearingB}°, elev ${elevB}°  (水平距 dB=${dB.toFixed(2)} km)`,
+      `反推 AB ≈ ${scene.AB.toFixed(2)} km；bearing(A→B)≈${scene.bearingComputed.toFixed(2)}°`,
+      `与给定 096° 的横向偏离 ≈ ${scene.perpErr.toFixed(3)} km`
+    ]);
+
+    statusEl.innerHTML =
+      `<div><b>结果（由固定飞机点反推）</b></div>
+       <div class="mono">AB ≈ ${scene.AB.toFixed(3)} km</div>
+       <div class="mono">bearing(A→B) ≈ ${scene.bearingComputed.toFixed(3)}°</div>
+       <div class="mono">与 096° 偏离 ≈ ${scene.perpErr.toFixed(3)} km（0 表示完全一致）</div>`;
+  }
+
+  // init
+  yawValEl.textContent = (parseFloat(yawEl.value)||0).toFixed(1) + "°";
+  resize();
+  draw();
+})();
+</script>
+</body>
+</html>
